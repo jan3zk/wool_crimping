@@ -163,7 +163,7 @@ def create_anisotropy_quiver_plot(image_path, output_anisotropy_path, output_ori
     O_skip = O[::skip, ::skip]
     
     # Define arrow length - scale by anisotropy to emphasize strong orientations
-    arrow_length = zoi_size * 0.5
+    arrow_length = zoi_size * 0.8
     
     # Make arrows longer when anisotropy is higher
     arrow_lengths = arrow_length * (0.5 + A_skip)
@@ -192,7 +192,7 @@ def create_anisotropy_quiver_plot(image_path, output_anisotropy_path, output_ori
                       headaxislength=4.5)
     
     # Add a colorbar for anisotropy
-    cbar1 = plt.colorbar(quiver1)
+    cbar1 = plt.colorbar(quiver1, shrink=0.5)
     cbar1.set_label('Anisotropy Amplitude')
     
     plt.title('Anisotropy Field (Colored by Anisotropy Strength)')
@@ -222,7 +222,7 @@ def create_anisotropy_quiver_plot(image_path, output_anisotropy_path, output_ori
                       headaxislength=4.5)
     
     # Add a colorbar for orientation
-    cbar2 = plt.colorbar(quiver2)
+    cbar2 = plt.colorbar(quiver2, shrink=0.5)
     cbar2.set_label('Orientation (degrees)')
     
     plt.title('Anisotropy Field (Colored by Orientation Angle)')
