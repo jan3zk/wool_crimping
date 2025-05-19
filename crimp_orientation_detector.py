@@ -41,12 +41,10 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False):
         cv2.imwrite(os.path.join(debug_dir, "02_grayscale.png"), gray)
     
     # Apply Gaussian blur to reduce noise
-    #blurred = cv2.GaussianBlur(gray, (3, 3), 1)
-    blurred = cv2.bilateralFilter(gray, d=5, sigmaColor=75, sigmaSpace=75)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     if debug_dir:
         cv2.imwrite(os.path.join(debug_dir, "03_blurred.png"), blurred)
-    #blurred = cv2.GaussianBlur(gray, (7, 7), 3)
-    
+        
     # Edge detection using Canny
     v = np.median(blurred)
     lower = int(max(0, (1.0 - 0.33) * v))
