@@ -65,9 +65,10 @@ def compute_anisotropy_tensor(sub_image, alpha=0):
     
     return tensor, anisotropy_amplitude, orientation, eigenvalues, v
 
-def create_anisotropy_quiver_plot(image_path, output_path, zoi_size=32, skip=1, alpha=0, debug=False):
+def process_image_anisotropy(image_path, zoi_size=32, alpha=0, debug=False):
     """
-    Create a quiver plot showing the anisotropy field superimposed on the original image.
+    Process the image and calculate anisotropy data for each zone of interest (ZOI).
+    Returns all data needed for plotting.
     """
     # Load the image and convert to grayscale
     img = np.array(Image.open(image_path).convert('L')).astype(float)
@@ -87,9 +88,10 @@ def create_anisotropy_quiver_plot(image_path, output_path, zoi_size=32, skip=1, 
     U = np.zeros_like(X, dtype=float)
     V = np.zeros_like(Y, dtype=float)
     A = np.zeros_like(X, dtype=float)  # Anisotropy amplitude
+    O = np.zeros_like(X, dtype=float)  # Orientation angle in degrees
     
     # Process each ZOI
-    orientations = []  # Store orientations for debugging
+    orientations = []  # Store normalized orientations for debugging
     
     for i in range(n_zoi_y):
         for j in range(n_zoi_x):
@@ -105,40 +107,52 @@ def create_anisotropy_quiver_plot(image_path, output_path, zoi_size=32, skip=1, 
                 # Compute anisotropy
                 tensor, anisotropy, orientation, eigenvalues, eigenvector = compute_anisotropy_tensor(sub_image, alpha)
                 
+                # Normalize orientation to 0-180 degree range for both coloring and histogram
+                normalized_orientation = ((orientation * 180/np.pi) + 180) % 180
+                
                 # Debug output for a few ZOIs
                 if debug and i % 5 == 0 and j % 5 == 0:
                     print(f"ZOI ({i},{j}):")
                     print(f"  Tensor: {tensor}")
                     print(f"  Eigenvalues: {eigenvalues}")
                     print(f"  Eigenvector: {eigenvector}")
-                    print(f"  Orientation: {orientation * 180/np.pi:.2f} degrees")
+                    print(f"  Raw Orientation: {orientation * 180/np.pi:.2f} degrees")
+                    print(f"  Normalized Orientation: {normalized_orientation:.2f} degrees")
                     print(f"  Anisotropy: {anisotropy:.4f}")
                 
                 # Store results (make vectors point along fiber direction)
                 U[i, j] = np.cos(orientation)
                 V[i, j] = np.sin(orientation)
                 A[i, j] = anisotropy
-                orientations.append(orientation * 180/np.pi)  # Store in degrees
+                O[i, j] = normalized_orientation
+                
+                # Store normalized orientation for histogram
+                orientations.append(normalized_orientation)
     
     # Debug: Check distribution of orientations
     if debug:
         orientations = np.array(orientations)
         print(f"Orientation stats: min={orientations.min():.2f}°, max={orientations.max():.2f}°, "
               f"mean={orientations.mean():.2f}°, std={orientations.std():.2f}°")
-        # Plot histogram of orientations
+        # Plot histogram of normalized orientations
         plt.figure(figsize=(8, 6))
-        plt.hist(orientations, bins=36, range=(-180, 180))
-        plt.title('Histogram of Orientations')
-        plt.xlabel('Orientation (degrees)')
+        plt.hist(orientations, bins=18, range=(0, 180))
+        plt.title('Histogram of Fiber Orientations')
+        plt.xlabel('Orientation (degrees, 0-180°)')
         plt.ylabel('Count')
         plt.savefig('orientation_histogram.png')
         plt.close()
     
-    # Create the figure
-    plt.figure(figsize=(12, 10))
-    
-    # Show the original image
-    plt.imshow(img, cmap='gray')
+    return img, X, Y, U, V, A, O, zoi_size
+
+def create_anisotropy_quiver_plot(image_path, output_anisotropy_path, output_orientation_path, zoi_size=32, skip=1, alpha=0, debug=False):
+    """
+    Create two quiver plots:
+    1. Original: arrows colored by anisotropy
+    2. New: arrows colored by orientation angle
+    """
+    # Process the image once to get all data
+    img, X, Y, U, V, A, O, zoi_size = process_image_anisotropy(image_path, zoi_size, alpha, debug)
     
     # Apply skip to reduce density of arrows if needed
     X_skip = X[::skip, ::skip]
@@ -146,6 +160,7 @@ def create_anisotropy_quiver_plot(image_path, output_path, zoi_size=32, skip=1, 
     U_skip = U[::skip, ::skip]
     V_skip = V[::skip, ::skip]
     A_skip = A[::skip, ::skip]
+    O_skip = O[::skip, ::skip]
     
     # Define arrow length - scale by anisotropy to emphasize strong orientations
     arrow_length = zoi_size * 0.5
@@ -160,8 +175,11 @@ def create_anisotropy_quiver_plot(image_path, output_path, zoi_size=32, skip=1, 
     U_scaled = U_skip / norm * arrow_lengths
     V_scaled = V_skip / norm * arrow_lengths
     
-    # Draw arrows
-    quiver = plt.quiver(X_skip, Y_skip, U_scaled, V_scaled, 
+    # Create the first figure - arrows colored by anisotropy (original)
+    plt.figure(figsize=(12, 10))
+    plt.imshow(img, cmap='gray')
+    
+    quiver1 = plt.quiver(X_skip, Y_skip, U_scaled, V_scaled, 
                       A_skip,  # Color by anisotropy
                       cmap='Reds',
                       angles='xy',  
@@ -174,27 +192,59 @@ def create_anisotropy_quiver_plot(image_path, output_path, zoi_size=32, skip=1, 
                       headaxislength=4.5)
     
     # Add a colorbar for anisotropy
-    cbar = plt.colorbar(quiver)
-    cbar.set_label('Anisotropy Amplitude')
+    cbar1 = plt.colorbar(quiver1)
+    cbar1.set_label('Anisotropy Amplitude')
     
-    plt.title('Anisotropy Field of the Studied Specimen')
+    plt.title('Anisotropy Field (Colored by Anisotropy Strength)')
     plt.xlabel('x (pixel)')
     plt.ylabel('y (pixel)')
     plt.tight_layout()
     
-    # Save the figure to the output path
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"Anisotropy quiver plot saved to {output_path}")
+    # Save the first figure
+    plt.savefig(output_anisotropy_path, dpi=300, bbox_inches='tight')
+    print(f"Anisotropy quiver plot (colored by anisotropy) saved to {output_anisotropy_path}")
+    plt.close()
     
-    # Close the figure to free memory
+    # Create the second figure - arrows colored by orientation
+    plt.figure(figsize=(12, 10))
+    plt.imshow(img, cmap='gray')
+    
+    quiver2 = plt.quiver(X_skip, Y_skip, U_scaled, V_scaled, 
+                      O_skip,  # Color by orientation angle
+                      cmap='hsv',  # Circular colormap appropriate for angles
+                      angles='xy',  
+                      scale=1,
+                      scale_units='xy',
+                      units='xy',
+                      width=zoi_size/20,
+                      headwidth=3,
+                      headlength=5, 
+                      headaxislength=4.5)
+    
+    # Add a colorbar for orientation
+    cbar2 = plt.colorbar(quiver2)
+    cbar2.set_label('Orientation (degrees)')
+    
+    plt.title('Anisotropy Field (Colored by Orientation Angle)')
+    plt.xlabel('x (pixel)')
+    plt.ylabel('y (pixel)')
+    plt.tight_layout()
+    
+    # Save the second figure
+    plt.savefig(output_orientation_path, dpi=300, bbox_inches='tight')
+    print(f"Anisotropy quiver plot (colored by orientation) saved to {output_orientation_path}")
     plt.close()
 
 def main():
     # Set up argument parser
-    parser = argparse.ArgumentParser(description='Create an anisotropy quiver plot for a mineral wool image')
+    parser = argparse.ArgumentParser(description='Create anisotropy quiver plots for a mineral wool image')
     parser.add_argument('input_image', help='Path to the input mineral wool image')
-    parser.add_argument('--output', '-o', help='Path to save the output quiver plot (default: anisotropy_quiver.png)',
+    parser.add_argument('--output-anisotropy', '-oa', 
+                        help='Path to save the anisotropy-colored quiver plot (default: anisotropy_quiver.png)',
                         default='anisotropy_quiver.png')
+    parser.add_argument('--output-orientation', '-oo', 
+                        help='Path to save the orientation-colored quiver plot (default: orientation_quiver.png)',
+                        default='orientation_quiver.png')
     parser.add_argument('--zoi_size', '-z', type=int, default=32, help='Size of zones of interest (default: 32)')
     parser.add_argument('--skip', '-s', type=int, default=1, help='Show only every skip\'th arrow (default: 1)')
     parser.add_argument('--alpha', '-a', type=float, default=0, help='Regularization parameter alpha (default: 0)')
@@ -202,8 +252,16 @@ def main():
     
     args = parser.parse_args()
     
-    # Create the quiver plot
-    create_anisotropy_quiver_plot(args.input_image, args.output, args.zoi_size, args.skip, args.alpha, args.debug)
+    # Create both quiver plots
+    create_anisotropy_quiver_plot(
+        args.input_image, 
+        args.output_anisotropy, 
+        args.output_orientation,
+        args.zoi_size, 
+        args.skip, 
+        args.alpha, 
+        args.debug
+    )
 
 if __name__ == "__main__":
     main()
