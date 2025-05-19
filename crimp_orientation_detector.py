@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import os
 from pathlib import Path
 import glob
+import argparse
 
 
 def analyze_fiber_orientation(image_path, save_dir=None, debug=False):
@@ -258,9 +259,6 @@ if __name__ == "__main__":
     
     # For batch processing
     # batch_process("./images", "./results", "*.jpg")
-    
-    # You can modify this to take command line arguments
-    import argparse
     
     parser = argparse.ArgumentParser(description='Analyze fiber orientation in mineral wool samples')
     parser.add_argument('--input', required=True, help='Input image path or directory')
