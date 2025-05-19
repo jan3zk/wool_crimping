@@ -66,7 +66,7 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False, method="ca
         mask = edges > 0
         
     else:  # method == "adaptive"
-        # Method 2: Adaptive threshold approach (from tmp.py)
+        # Method 2: Adaptive threshold approach
         
         # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance contrast
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
