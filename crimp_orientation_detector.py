@@ -7,7 +7,7 @@ import glob
 import argparse
 
 
-def analyze_fiber_orientation(image_path, save_dir=None, debug=False):
+def analyze_fiber_orientation(image_path, save_dir=None, debug=False, method="canny"):
     """
     Analyze fiber orientation in mineral wool sample images
     
@@ -15,6 +15,7 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False):
         image_path: Path to the image file
         save_dir: Directory to save result images (optional)
         debug: Whether to save intermediate processing images for debugging
+        method: Edge detection method to use ("canny" or "adaptive")
     
     Returns:
         histogram: Array of orientation counts (180 bins, 1-degree resolution)
@@ -40,22 +41,98 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False):
     if debug_dir:
         cv2.imwrite(os.path.join(debug_dir, "02_grayscale.png"), gray)
     
-    # Apply Gaussian blur to reduce noise
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    if debug_dir:
-        cv2.imwrite(os.path.join(debug_dir, "03_blurred.png"), blurred)
+    # Process image based on selected method
+    if method == "canny":
+        # Method 1: Canny-based approach (from crimp_orientation_detector.py)
         
-    # Edge detection using Canny
-    v = np.median(blurred)
-    lower = int(max(0, (1.0 - 0.33) * v))
-    upper = int(min(255, (1.0 + 0.33) * v))
-    edges = cv2.Canny(blurred, lower, upper)
-    if debug_dir:
-        cv2.imwrite(os.path.join(debug_dir, "04_canny_edges.png"), edges)
-    
-    # Calculate gradients using Sobel
-    sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=5)
-    sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=5)
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "03_blurred.png"), blurred)
+            
+        # Edge detection using Canny
+        v = np.median(blurred)
+        lower = int(max(0, (1.0 - 0.33) * v))
+        upper = int(min(255, (1.0 + 0.33) * v))
+        edges = cv2.Canny(blurred, lower, upper)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "04_canny_edges.png"), edges)
+        
+        # Calculate gradients using Sobel
+        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=5)
+        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=5)
+        
+        # Create a mask for significant edges (using Canny output)
+        mask = edges > 0
+        
+    else:  # method == "adaptive"
+        # Method 2: Adaptive threshold approach (from tmp.py)
+        
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance contrast
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "02b_enhanced.png"), enhanced)
+        
+        # Apply stronger Gaussian blur to reduce fine details (increased kernel size)
+        blurred = cv2.GaussianBlur(enhanced, (9, 9), 0)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "03_blurred.png"), blurred)
+        
+        # Use adaptive thresholding instead of Canny for better fiber detection
+        binary = cv2.adaptiveThreshold(
+            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY_INV, 21, 5
+        )
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "04a_adaptive_threshold.png"), binary)
+        
+        # Apply morphological operations to connect broken fibers and remove noise
+        kernel = np.ones((3, 3), np.uint8)
+        # Opening (erosion followed by dilation) to remove small isolated points
+        opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "04b_opened.png"), opened)
+        
+        # Closing (dilation followed by erosion) to connect broken fibers
+        closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=2)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "04c_closed.png"), closed)
+        
+        # Use the binary mask instead of Canny edges for orientation analysis
+        edges = closed
+        
+        # Also try traditional Canny with adjusted parameters for comparison
+        v = np.median(blurred)
+        # Use lower thresholds to capture more of the fiber
+        lower = int(max(0, (1.0 - 0.5) * v))  # More permissive lower threshold
+        upper = int(min(255, (1.0 + 0.2) * v))
+        canny_edges = cv2.Canny(blurred, lower, upper)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "04d_canny_edges.png"), canny_edges)
+
+        # Calculate gradients using Sobel with larger kernel for smoother gradients
+        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=7)  # Increased kernel size
+        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=7)  # Increased kernel size
+        
+        # Calculate magnitude
+        magnitude = np.sqrt(sobelx**2 + sobely**2)
+        
+        # Apply minimum threshold on gradient magnitude to remove weak edges
+        min_magnitude = np.percentile(magnitude, 70)  # Only keep top 30% of gradient magnitudes
+        strong_gradients = magnitude > min_magnitude
+        
+        # Create initial mask from edges
+        mask = edges > 0
+        
+        # Combine the binary mask and strong gradients for final mask
+        mask = mask & strong_gradients
+        
+        if debug_dir:
+            # Visualize the final mask
+            final_mask_img = np.zeros_like(gray)
+            final_mask_img[mask] = 255
+            cv2.imwrite(os.path.join(debug_dir, "09_final_mask.png"), final_mask_img)
     
     # Save debug images for Sobel gradients (normalize to 0-255 for visualization)
     if debug_dir:
@@ -87,9 +164,6 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False):
                 orientation_vis[i, j] = rgb
         
         cv2.imwrite(os.path.join(debug_dir, "08_orientation_full.png"), orientation_vis)
-    
-    # Create a mask for significant edges (using Canny output)
-    mask = edges > 0
     
     # Filter orientations by the mask
     valid_orientations = orientation[mask]
@@ -192,12 +266,15 @@ def save_results(img, edges, orientation, mask, histogram, image_path, save_dir,
     cv2.imwrite(overlay_img_path, overlay_img)
     
     if debug:
+        # Create debug directory if it doesn't exist
+        debug_dir = os.path.join(save_dir, "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        
         # Save the masked orientation visualization
-        debug_dir = os.path.join(save_dir, "debug", base_name)
-        cv2.imwrite(os.path.join(debug_dir, "09_masked_orientation.png"), orientation_vis)
+        cv2.imwrite(os.path.join(debug_dir, f"{base_name}_masked_orientation.png"), orientation_vis)
         
         # Save the edge overlay as debug image too
-        cv2.imwrite(os.path.join(debug_dir, "10_edge_overlay.png"), overlay_img)
+        cv2.imwrite(os.path.join(debug_dir, f"{base_name}_edge_overlay.png"), overlay_img)
     
     # Also save the histogram data as CSV
     np.savetxt(os.path.join(save_dir, f"{base_name}_histogram.csv"), 
@@ -205,7 +282,7 @@ def save_results(img, edges, orientation, mask, histogram, image_path, save_dir,
                delimiter=',', header='Angle,Count', comments='')
 
 
-def batch_process(input_dir, output_dir, pattern="*.jpg", debug=False):
+def batch_process(input_dir, output_dir, pattern="*.jpg", debug=False, method="canny"):
     """
     Process all images matching the pattern in the input directory
     
@@ -214,6 +291,7 @@ def batch_process(input_dir, output_dir, pattern="*.jpg", debug=False):
         output_dir: Directory to save the results
         pattern: Glob pattern to match image files
         debug: Whether to save intermediate processing images
+        method: Edge detection method to use ("canny" or "adaptive")
     """
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -225,13 +303,13 @@ def batch_process(input_dir, output_dir, pattern="*.jpg", debug=False):
         print(f"No images found matching pattern {pattern} in {input_dir}")
         return
     
-    print(f"Found {len(image_files)} images to process")
+    print(f"Found {len(image_files)} images to process using {method} method")
     
     # Process each image
     all_histograms = {}
     for i, image_path in enumerate(image_files):
         print(f"Processing image {i+1}/{len(image_files)}: {image_path}")
-        hist = analyze_fiber_orientation(image_path, output_dir, debug=debug)
+        hist = analyze_fiber_orientation(image_path, output_dir, debug=debug, method=method)
         if hist is not None:
             all_histograms[os.path.basename(image_path)] = hist
     
@@ -251,23 +329,18 @@ def batch_process(input_dir, output_dir, pattern="*.jpg", debug=False):
 
 
 if __name__ == "__main__":
-    # Example usage
-    # For single image
-    # analyze_fiber_orientation("path/to/image.jpg", "results")
-    
-    # For batch processing
-    # batch_process("./images", "./results", "*.jpg")
-    
     parser = argparse.ArgumentParser(description='Analyze fiber orientation in mineral wool samples')
     parser.add_argument('--input', required=True, help='Input image path or directory')
     parser.add_argument('--output', required=True, help='Output directory')
     parser.add_argument('--pattern', default="*.jpg", help='File pattern for batch processing')
     parser.add_argument('--batch', action='store_true', help='Enable batch processing')
     parser.add_argument('--debug', action='store_true', help='Save intermediate processing images')
+    parser.add_argument('--method', choices=['canny', 'adaptive'], default='canny', 
+                        help='Edge detection method: "canny" (basic Canny-based) or "adaptive" (morphological operations)')
     
     args = parser.parse_args()
     
     if args.batch:
-        batch_process(args.input, args.output, args.pattern, debug=args.debug)
+        batch_process(args.input, args.output, args.pattern, debug=args.debug, method=args.method)
     else:
-        analyze_fiber_orientation(args.input, args.output, debug=args.debug)
+        analyze_fiber_orientation(args.input, args.output, debug=args.debug, method=args.method)
