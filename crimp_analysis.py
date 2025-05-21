@@ -3,11 +3,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from pathlib import Path
-import glob
 import argparse
 
 
-def analyze_fiber_orientation(image_path, save_dir=None, debug=False, method="canny"):
+def analyze_fiber_orientation(image_path, save_dir=None, debug=False, method="canny", min_edge_length=0):
     """
     Analyze fiber orientation in mineral wool sample images
     
@@ -16,6 +15,7 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False, method="ca
         save_dir: Directory to save result images (optional)
         debug: Whether to save intermediate processing images for debugging
         method: Edge detection method to use ("canny" or "adaptive")
+        min_edge_length: Minimum length of edges to keep (in pixels), edges shorter than this will be filtered out
     
     Returns:
         histogram: Array of orientation counts (180 bins, 1-degree resolution)
@@ -58,13 +58,6 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False, method="ca
         if debug_dir:
             cv2.imwrite(os.path.join(debug_dir, "04_canny_edges.png"), edges)
         
-        # Calculate gradients using Sobel
-        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=5)
-        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=5)
-        
-        # Create a mask for significant edges (using Canny output)
-        mask = edges > 0
-        
     else:  # method == "adaptive"
         # Method 2: Adaptive threshold approach
         
@@ -101,38 +94,53 @@ def analyze_fiber_orientation(image_path, save_dir=None, debug=False, method="ca
         
         # Use the binary mask instead of Canny edges for orientation analysis
         edges = closed
+    
+    # Filter out edges that are too short using connected component analysis
+    if min_edge_length > 0:
+        # Find connected components
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(edges, connectivity=8)
         
-        # Also try traditional Canny with adjusted parameters for comparison
-        v = np.median(blurred)
-        # Use lower thresholds to capture more of the fiber
-        lower = int(max(0, (1.0 - 0.5) * v))  # More permissive lower threshold
-        upper = int(min(255, (1.0 + 0.2) * v))
-        canny_edges = cv2.Canny(blurred, lower, upper)
+        # Create a new edge image with only components larger than min_edge_length
+        filtered_edges = np.zeros_like(edges)
+        
+        # Start from 1 to skip the background (label 0)
+        for i in range(1, num_labels):
+            # Get the size (area) of the current component
+            size = stats[i, cv2.CC_STAT_AREA]
+            
+            # Keep only components larger than the minimum size
+            if size >= min_edge_length:
+                filtered_edges[labels == i] = 255
+        
+        # Save debug image for filtered edges
         if debug_dir:
-            cv2.imwrite(os.path.join(debug_dir, "04d_canny_edges.png"), canny_edges)
-
-        # Calculate gradients using Sobel with larger kernel for smoother gradients
-        sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=7)  # Increased kernel size
-        sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=7)  # Increased kernel size
+            cv2.imwrite(os.path.join(debug_dir, "04d_filtered_edges.png"), filtered_edges)
         
-        # Calculate magnitude
-        magnitude = np.sqrt(sobelx**2 + sobely**2)
+        # Update edges with filtered version
+        edges = filtered_edges
         
-        # Apply minimum threshold on gradient magnitude to remove weak edges
-        min_magnitude = np.percentile(magnitude, 70)  # Only keep top 30% of gradient magnitudes
-        strong_gradients = magnitude > min_magnitude
+    # Calculate gradients using Sobel with larger kernel for smoother gradients
+    sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=7)
+    sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=7)
+    
+    # Calculate magnitude
+    magnitude = np.sqrt(sobelx**2 + sobely**2)
+    
+    # Apply minimum threshold on gradient magnitude to remove weak edges
+    min_magnitude = np.percentile(magnitude, 70)  # Only keep top 30% of gradient magnitudes
+    strong_gradients = magnitude > min_magnitude
+    
+    # Create initial mask from edges
+    mask = edges > 0
+    
+    # Combine the binary mask and strong gradients for final mask
+    mask = mask & strong_gradients
         
-        # Create initial mask from edges
-        mask = edges > 0
-        
-        # Combine the binary mask and strong gradients for final mask
-        mask = mask & strong_gradients
-        
-        if debug_dir:
-            # Visualize the final mask
-            final_mask_img = np.zeros_like(gray)
-            final_mask_img[mask] = 255
-            cv2.imwrite(os.path.join(debug_dir, "09_final_mask.png"), final_mask_img)
+    if debug_dir:
+        # Visualize the final mask
+        final_mask_img = np.zeros_like(gray)
+        final_mask_img[mask] = 255
+        cv2.imwrite(os.path.join(debug_dir, "09_final_mask.png"), final_mask_img)
     
     # Save debug images for Sobel gradients (normalize to 0-255 for visualization)
     if debug_dir:
@@ -282,65 +290,17 @@ def save_results(img, edges, orientation, mask, histogram, image_path, save_dir,
                delimiter=',', header='Angle,Count', comments='')
 
 
-def batch_process(input_dir, output_dir, pattern="*.jpg", debug=False, method="canny"):
-    """
-    Process all images matching the pattern in the input directory
-    
-    Args:
-        input_dir: Directory containing the images
-        output_dir: Directory to save the results
-        pattern: Glob pattern to match image files
-        debug: Whether to save intermediate processing images
-        method: Edge detection method to use ("canny" or "adaptive")
-    """
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Find all matching image files
-    image_files = glob.glob(os.path.join(input_dir, pattern))
-    
-    if not image_files:
-        print(f"No images found matching pattern {pattern} in {input_dir}")
-        return
-    
-    print(f"Found {len(image_files)} images to process using {method} method")
-    
-    # Process each image
-    all_histograms = {}
-    for i, image_path in enumerate(image_files):
-        print(f"Processing image {i+1}/{len(image_files)}: {image_path}")
-        hist = analyze_fiber_orientation(image_path, output_dir, debug=debug, method=method)
-        if hist is not None:
-            all_histograms[os.path.basename(image_path)] = hist
-    
-    # Save combined results
-    combined_output = os.path.join(output_dir, "combined_results.csv")
-    with open(combined_output, 'w') as f:
-        # Write header
-        header = "Image," + ",".join([str(i) for i in range(180)])
-        f.write(header + "\n")
-        
-        # Write data for each image
-        for image_name, hist in all_histograms.items():
-            line = image_name + "," + ",".join([str(count) for count in hist])
-            f.write(line + "\n")
-    
-    print(f"Combined results saved to {combined_output}")
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze fiber orientation in mineral wool samples')
-    parser.add_argument('--input', required=True, help='Input image path or directory')
+    parser.add_argument('--input', required=True, help='Input image path')
     parser.add_argument('--output', required=True, help='Output directory')
-    parser.add_argument('--pattern', default="*.jpg", help='File pattern for batch processing')
-    parser.add_argument('--batch', action='store_true', help='Enable batch processing')
     parser.add_argument('--debug', action='store_true', help='Save intermediate processing images')
     parser.add_argument('--method', choices=['canny', 'adaptive'], default='canny', 
                         help='Edge detection method: "canny" (basic Canny-based) or "adaptive" (morphological operations)')
+    parser.add_argument('--min-edge-length', type=int, default=0,
+                        help='Minimum length of edges to keep (in pixels). Edges shorter than this will be filtered out.')
     
     args = parser.parse_args()
     
-    if args.batch:
-        batch_process(args.input, args.output, args.pattern, debug=args.debug, method=args.method)
-    else:
-        analyze_fiber_orientation(args.input, args.output, debug=args.debug, method=args.method)
+    # Process a single image
+    analyze_fiber_orientation(args.input, args.output, debug=args.debug, method=args.method, min_edge_length=args.min_edge_length)
